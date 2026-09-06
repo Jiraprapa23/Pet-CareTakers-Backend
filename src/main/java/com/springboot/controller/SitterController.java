@@ -79,6 +79,66 @@ public class SitterController {
         return ResponseEntity.ok(result);
     }
 
+    // =================== ดึงโปรไฟล์ผู้ดูแล + รีวิว (Public — ไม่ต้อง login) ===================
+    // สโคปข้อมูลจำกัด: ไม่มีเบอร์โทร/อีเมล/ที่อยู่เต็ม/พิกัด/วันเกิดจริง
+    @GetMapping("/profile-public/{sitterID}")
+    public ResponseEntity<Map<String, Object>> getSitterProfilePublic(@PathVariable Integer sitterID) {
+        Optional<PetSitter> optional = petSitterRepository.findById(sitterID);
+        if (optional.isEmpty()) return ResponseEntity.notFound().build();
+
+        PetSitter sitter = optional.get();
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("sitterID", sitter.getSitterID());
+        response.put("firstname", sitter.getFirstname());
+        response.put("lastname", sitter.getLastname());
+        response.put("gender", sitter.getGender());
+        response.put("sitterImage", sitter.getSitterImage());
+        // ที่อยู่ระดับกว้างเท่านั้น (ไม่มี addressNo/street/zipcode/latitude/longitude)
+        response.put("subdistrict", sitter.getSubdistrict());
+        response.put("district", sitter.getDistrict());
+        response.put("province", sitter.getProvince());
+        response.put("petAlowPet", sitter.getPetAllowType());
+        response.put("acceptedPetSize", sitter.getAcceptedPetSize());
+        response.put("experienceYear", sitter.getExperienceYear());
+        response.put("pricePerDay", sitter.getPricePerDay());
+        response.put("isMorning", sitter.getIsMorning());
+        response.put("isAfternoon", sitter.getIsAfternoon());
+        response.put("isEvening", sitter.getIsEvening());
+        response.put("isNight", sitter.getIsNight());
+        response.put("isFeedMedicine", sitter.getIsFeedMedicine());
+        response.put("isCleanService", sitter.getIsCleanService());
+        response.put("isWalkService", sitter.getIsWalkService());
+
+        // รีวิว (โชว์ได้ ไม่อ่อนไหว)
+        List<Review> reviews = reviewRepository.findByTargetIDAndTargetRoleOrderByCreatedAtDesc(sitterID, "SITTER");
+        List<Map<String, Object>> reviewList = new ArrayList<>();
+        for (Review review : reviews) {
+            Map<String, Object> reviewMap = new HashMap<>();
+            reviewMap.put("reviewID", review.getReviewID());
+            reviewMap.put("rating", review.getRating());
+            reviewMap.put("comment", review.getComment());
+            reviewMap.put("createdAt", review.getCreatedAt());
+            reviewMap.put("reviewerRole", review.getReviewerRole());
+            if ("OWNER".equals(review.getReviewerRole())) {
+                petOwnerRepository.findById(review.getReviewerID()).ifPresent(owner -> {
+                    reviewMap.put("reviewerName", owner.getFirstname() + " " + owner.getLastname());
+                    reviewMap.put("reviewerImage", owner.getProfileImage());
+                });
+            }
+            reviewList.add(reviewMap);
+        }
+
+        Double avgRating = reviewRepository.getAverageRatingBySitter(sitterID);
+        Long reviewCount = reviewRepository.countByTargetIDAndTargetRole(sitterID, "SITTER");
+
+        response.put("reviews", reviewList);
+        response.put("avgRating", avgRating != null ? Math.round(avgRating * 10.0) / 10.0 : null);
+        response.put("reviewCount", reviewCount);
+
+        return ResponseEntity.ok(response);
+    }
+
     // =================== ดึงโปรไฟล์ผู้ดูแล + รีวิว ===================
     @GetMapping("/profile/{sitterID}")
     public ResponseEntity<Map<String, Object>> getSitterProfile(@PathVariable Integer sitterID) {

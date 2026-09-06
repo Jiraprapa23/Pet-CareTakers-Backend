@@ -196,6 +196,66 @@ public class AnnouncementController {
     }
 
     // =================== ดึงรายละเอียดประกาศ ===================
+    // =================== ดึงรายละเอียดประกาศ (Public — ไม่ต้อง login) ===================
+    // สโคปข้อมูลจำกัด: ไม่มีที่อยู่เต็ม/พิกัด, ไม่มีข้อมูลเจ้าของ, ไม่มีรายชื่อผู้สมัคร, ไม่มีสถานะงาน/สลิป
+    @GetMapping("/detail-public/{announceID}")
+    public ResponseEntity<Map<String, Object>> getAnnouncementDetailPublic(@PathVariable Integer announceID) {
+        Optional<Announcement> optional = announcementRepository.findById(announceID);
+        if (optional.isEmpty()) return ResponseEntity.notFound().build();
+
+        Announcement ann = optional.get();
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("announceID", ann.getAnnounceID());
+        response.put("postdate", ann.getPostdate());
+        response.put("startdate", ann.getStartdate());
+        response.put("enddate", ann.getEnddate());
+        response.put("currentweight", ann.getCurrentweight());
+        // ที่อยู่ระดับกว้างเท่านั้น (ไม่มี addressNo/street/zipcode/latitude/longitude)
+        response.put("subdistrict", ann.getSubdistrict());
+        response.put("district", ann.getDistrict());
+        response.put("province", ann.getProvince());
+        response.put("status", ann.getStatus());
+
+        // ข้อมูลสัตว์เลี้ยง (โชว์เต็ม ไม่อ่อนไหว)
+        petRepository.findById(ann.getPetID()).ifPresent(pet -> {
+            Map<String, Object> petMap = new HashMap<>();
+            petMap.put("petID", pet.getPetID());
+            petMap.put("petName", pet.getPetName());
+            petMap.put("petImage", pet.getPetImage());
+            petMap.put("petType", pet.getPetType() != null ? pet.getPetType().getPetTypeName() : "");
+            petMap.put("breed", pet.getBreed());
+            petMap.put("gender", pet.getGender());
+            petMap.put("birthDate", pet.getBirthDate());
+            petMap.put("vacRabiesDate", pet.getVacRabiesDate());
+            petMap.put("vacDhppiDate", pet.getVacDhppiDate());
+            petMap.put("vacFvrcpDate", pet.getVacFvrcpDate());
+            petMap.put("hasCongenitalDisease", pet.getHasCongenitalDisease());
+            petMap.put("congenitalDiseaseDetail", pet.getCongenitalDiseaseDetail());
+            petMap.put("behaviorStressAlone", pet.getBehaviorStressAlone());
+            petMap.put("behaviorFriendly", pet.getBehaviorFriendly());
+            petMap.put("behaviorFearStranger", pet.getBehaviorFearStranger());
+            petMap.put("behaviorFearLoudSound", pet.getBehaviorFearLoudSound());
+            petMap.put("behaviorBarkLoud", pet.getBehaviorBarkLoud());
+            petMap.put("behaviorDislikeTouch", pet.getBehaviorDislikeTouch());
+            petMap.put("behaviorBiteScrath", pet.getBehaviorBiteScrath());
+            petMap.put("behaviorEscapeExpert", pet.getBehaviorEscapeExpert());
+            petMap.put("behaviorHighEnergy", pet.getBehaviorHighEnergy());
+            petMap.put("behaviorJumpOnPeople", pet.getBehaviorJumpOnPeople());
+            petMap.put("behaviorHardControl", pet.getBehaviorHardControl());
+            response.put("pet", petMap);
+        });
+
+        // ข้อมูลการดูแล (โชว์ได้ ต้องใช้ตัดสินใจว่าจะสมัครไหม)
+        if (ann.getCarepetID() != null) {
+            carePetRepository.findById(ann.getCarepetID()).ifPresent(cp -> {
+                response.put("carePet", cp);
+            });
+        }
+
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping("/detail/{announceID}")
     public ResponseEntity<Map<String, Object>> getAnnouncementDetail(@PathVariable Integer announceID) {
         Optional<Announcement> optional = announcementRepository.findById(announceID);
