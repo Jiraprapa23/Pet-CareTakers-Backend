@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.*;
 
 @RestController
@@ -100,8 +101,8 @@ public class SitterJobController {
             result.add(map);
         }
 
-        // เรียงตามวันที่เริ่มดูแล (startdate) จากใกล้ถึงที่สุดไปไกลที่สุด — ประกาศที่ต้องไปดูแลเร็วสุดขึ้นก่อน
-        result.sort(Comparator.comparing(m -> (LocalDate) m.get("startdate"), Comparator.nullsLast(Comparator.naturalOrder())));
+        // เรียงตามระยะทางใกล้ที่สุดไปไกลที่สุด (endpoint นี้ใช้เฉพาะตอนค้นหาแบบระบุตำแหน่ง เช่น "ใกล้ฉัน")
+        result.sort(Comparator.comparingDouble(m -> (Double) m.get("distance")));
         return ResponseEntity.ok(result);
     }
 
@@ -132,6 +133,9 @@ public class SitterJobController {
         response.put("longitude", ann.getLongitude());
         response.put("status", ann.getStatus());
         response.put("totalAmount", ann.getTotalAmount());
+        response.put("emergencyMessage", ann.getEmergencyMessage());
+        response.put("emergencyImage", ann.getEmergencyImage());
+        response.put("emergencyReportedAt", ann.getEmergencyReportedAt());
 
         // ข้อมูลเจ้าของ — Phase 6: ใช้ relationship แทน petOwnerRepository.findById()
         PetOwner owner = ann.getOwner();
@@ -174,6 +178,7 @@ public class SitterJobController {
             petMap.put("behaviorStressAlone", pet.getBehaviorStressAlone());
             petMap.put("behaviorJumpOnPeople", pet.getBehaviorJumpOnPeople());
             petMap.put("behaviorHardControl", pet.getBehaviorHardControl());
+            petMap.put("isDeceased", Boolean.TRUE.equals(pet.getIsDeceased()));
             response.put("pet", petMap);
         }
 
@@ -208,6 +213,7 @@ public class SitterJobController {
                 applyMap.put("sitterImage", applicantSitter.getSitterImage());
                 applyMap.put("pricePerDay", applicantSitter.getPricePerDay());
                 applyMap.put("subdistrict", applicantSitter.getSubdistrict());
+                applyMap.put("district", applicantSitter.getDistrict());
                 applyMap.put("province", applicantSitter.getProvince());
                 applyMap.put("petAlowPet", applicantSitter.getPetAllowType());
                 if (ann.getLatitude() != null && applicantSitter.getLatitude() != null) {
@@ -370,6 +376,71 @@ public class SitterJobController {
         }
     }
 
+    // =================== แจ้งเหตุฉุกเฉิน (ผู้ดูแล — ระหว่างสถานะ "กำลังดูแล") ===================
+    // หมายเหตุ: การกดปุ่มนี้ "ไม่" เปลี่ยนสถานะประกาศ/สัตว์เลี้ยงใดๆ โดยอัตโนมัติ
+    // เป็นเพียงการแจ้งเตือนเจ้าของให้เข้ามาตรวจสอบและตัดสินใจเอง (กันผู้ดูแลกดหนีงานโดยอ้างเหตุเท็จ)
+    @PostMapping("/report-emergency")
+    public ResponseEntity<Map<String, String>> reportEmergency(
+            @RequestParam Integer announceID,
+            @RequestParam Integer sitterID,
+            @RequestParam String message,
+            @RequestParam(value = "image", required = false) MultipartFile image) {
+
+        Map<String, String> response = new HashMap<>();
+        try {
+            Optional<Announcement> optional = announcementRepository.findById(announceID);
+            if (optional.isEmpty()) {
+                response.put("message", "ไม่พบประกาศ");
+                return ResponseEntity.badRequest().body(response);
+            }
+            Announcement ann = optional.get();
+
+            if (!"กำลังดูแล".equals(ann.getStatus())) {
+                response.put("message", "ไม่สามารถแจ้งเหตุฉุกเฉินได้ในสถานะนี้");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            // เช็คว่าเป็นผู้ดูแลที่ได้รับเลือกของประกาศนี้จริง
+            boolean isAssignedSitter = applyJobRepository.findByAnnounceID(announceID).stream()
+                .anyMatch(a -> a.getSitterID().equals(sitterID) && "ได้รับเลือก".equals(a.getAppStatus()));
+            if (!isAssignedSitter) {
+                response.put("message", "คุณไม่มีสิทธิ์แจ้งเหตุฉุกเฉินสำหรับงานนี้");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            if (message == null || message.trim().isEmpty()) {
+                response.put("message", "กรุณากรอกรายละเอียดเหตุการณ์");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            if (ann.getEmergencyReportedAt() != null) {
+                response.put("message", "คุณได้แจ้งเหตุฉุกเฉินสำหรับงานนี้ไปแล้ว");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            ann.setEmergencyMessage(message.trim());
+            if (image != null && !image.isEmpty()) {
+                String fileName = saveFile(image, uploadDirReports);
+                ann.setEmergencyImage(fileName);
+            }
+            ann.setEmergencyReportedAt(LocalDateTime.now());
+            announcementRepository.save(ann);
+
+            notificationController.saveNotif(
+                ann.getOwnerID(), "OWNER",
+                "🚨 ผู้ดูแลแจ้งเหตุฉุกเฉินเกี่ยวกับสัตว์เลี้ยงของคุณ กรุณาตรวจสอบด่วน",
+                announceID
+            );
+
+            response.put("message", "แจ้งเหตุฉุกเฉินเรียบร้อยแล้ว เจ้าของสัตว์เลี้ยงจะได้รับการแจ้งเตือนทันที");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("message", "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
     // =================== ส่งรายงานการดูแล ===================
     @PostMapping("/submit-report")
     public ResponseEntity<Map<String, String>> submitReport(
@@ -392,6 +463,13 @@ public class SitterJobController {
         	}
 
         	if (targetAnn != null) {
+        	    // สัตว์เลี้ยงเสียชีวิตแล้ว → ปิดการส่งรายงาน (รอเจ้าของโอนเงินเต็มจำนวนเพื่อปิดงาน)
+        	    Pet deceasedCheckPet = petRepository.findById(targetAnn.getPetID()).orElse(null);
+        	    if (deceasedCheckPet != null && Boolean.TRUE.equals(deceasedCheckPet.getIsDeceased())) {
+        	        response.put("message", "ไม่สามารถส่งรายงานได้ เนื่องจากสัตว์เลี้ยงเสียชีวิตแล้ว กรุณารอเจ้าของชำระเงินเพื่อปิดงาน");
+        	        return ResponseEntity.badRequest().body(response);
+        	    }
+
         	    LocalDate today = LocalDate.now();
         	    LocalDate startDate = targetAnn.getStartdate();
         	    LocalDate endDate = targetAnn.getEnddate();
@@ -400,6 +478,15 @@ public class SitterJobController {
         	    if (today.isBefore(startDate) || today.isAfter(endDate)) {
         	        response.put("message", "ไม่สามารถส่งรายงานได้ เนื่องจากไม่อยู่ในช่วงวันที่ดูแล (" 
         	            + startDate + " ถึง " + endDate + ")");
+        	        return ResponseEntity.badRequest().body(response);
+        	    }
+
+        	    // เช็คว่ายังไม่ถึงเวลาเริ่มต้นของช่วงที่เลือกส่งรายงานหรือไม่
+        	    // (ป้องกันส่งรายงานก่อนเวลาที่ตกลงว่าจะเริ่มดูแล — ไม่จำกัดเวลาสิ้นสุด
+        	    // เพื่อให้ยืดหยุ่นกับงานจริงที่อาจเสร็จช้ากว่ากำหนดเล็กน้อย)
+        	    LocalTime slotStart = getSlotStartTime(timecare);
+        	    if (slotStart != null && LocalTime.now().isBefore(slotStart)) {
+        	        response.put("message", "ยังไม่ถึงเวลาเริ่ม " + timecare + " (เริ่ม " + slotStart + " น.) กรุณาส่งรายงานหลังถึงเวลาที่กำหนด");
         	        return ResponseEntity.badRequest().body(response);
         	    }
         	}
@@ -456,31 +543,6 @@ public class SitterJobController {
         }
     }
 
-    // =================== ยืนยันการชำระเงิน ===================
-    @PutMapping("/confirm-payment/{detailID}")
-    public ResponseEntity<Map<String, String>> confirmPayment(@PathVariable Integer detailID) {
-        Map<String, String> response = new HashMap<>();
-        assignJobRepository.findById(detailID).ifPresent(aj -> {
-            aj.setIsPaymentConfirmed("ชำระเงินเรียบร้อยแล้ว");
-            assignJobRepository.save(aj);
-            
-            announcementRepository.findAll().stream()
-            .filter(a -> a.getAssignJobID() != null && a.getAssignJobID().equals(detailID))
-            .findFirst()
-            .ifPresent(a -> {
-                a.setStatus("งานเสร็จสิ้น");
-                announcementRepository.save(a);
-                notificationController.saveNotif(
-                    a.getOwnerID(), "OWNER",
-                    "⭐ ผู้ดูแลยืนยันรับเงินแล้ว กรุณารีวิวผู้ดูแลสัตว์เลี้ยง",
-                    a.getAnnounceID()
-                );
-            });
-        });
-        response.put("message", "ได้รับเงินเรียบร้อยแล้ว");
-        return ResponseEntity.ok(response);
-    }
-
     // =================== ดึงรายการคำขอของผู้ดูแล ===================
     @GetMapping("/my-applications/{sitterID}")
     public ResponseEntity<List<Map<String, Object>>> getMyApplications(@PathVariable Integer sitterID) {
@@ -521,6 +583,17 @@ public class SitterJobController {
                     map.put("gender", pet.getGender());
                     map.put("birthDate", pet.getBirthDate());
                 }
+
+                // ดึงช่วงเวลาที่ดูแล — Phase 6: ใช้ relationship แทน carePetRepository.findById()
+                CarePet carePet = ann.getCarePet();
+                if (carePet != null) {
+                    List<String> slots = new ArrayList<>();
+                    if (Boolean.TRUE.equals(carePet.getCareMorning())) slots.add("ช่วงเช้า");
+                    if (Boolean.TRUE.equals(carePet.getCareAfternoon())) slots.add("ช่วงกลางวัน");
+                    if (Boolean.TRUE.equals(carePet.getCareEvening())) slots.add("ช่วงเย็น");
+                    if (Boolean.TRUE.equals(carePet.getCareNight())) slots.add("ช่วงดึก");
+                    map.put("careSlots", slots);
+                }
             }
             result.add(map);
         }
@@ -543,6 +616,19 @@ public class SitterJobController {
     private boolean datesOverlap(LocalDate start1, LocalDate end1, LocalDate start2, LocalDate end2) {
         if (start1 == null || end1 == null || start2 == null || end2 == null) return false;
         return !start1.isAfter(end2) && !end1.isBefore(start2);
+    }
+
+    // เวลาเริ่มต้นของแต่ละช่วงดูแล — ใช้ค่าเดียวกับ AnnouncementStatusScheduler และ
+    // AnnouncementController เพื่อให้ตรรกะทั้งระบบสอดคล้องกัน
+    private LocalTime getSlotStartTime(String timecare) {
+        if (timecare == null) return null;
+        switch (timecare) {
+            case "ช่วงเช้า": return LocalTime.of(6, 0);
+            case "ช่วงกลางวัน": return LocalTime.of(11, 0);
+            case "ช่วงเย็น": return LocalTime.of(16, 0);
+            case "ช่วงดึก": return LocalTime.of(21, 0);
+            default: return null;
+        }
     }
 
     private double calculateDistance(double lat1, double lon1, double lat2, double lon2) {

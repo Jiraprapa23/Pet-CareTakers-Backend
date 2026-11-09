@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
@@ -42,6 +43,50 @@ public class AnnouncementController {
     public ResponseEntity<Map<String, Object>> createAnnouncement(@RequestBody Map<String, Object> data) {
         Map<String, Object> response = new HashMap<>();
         try {
+            // =================== ตรวจสอบว่าวัน+เวลาเริ่มดูแลยังไม่ผ่านไปแล้ว ===================
+            // ป้องกันกรณีสร้างประกาศที่ "เกิดมาก็หมดอายุทันที" เช่น โพสต์ 09:00 แต่ต้องการ
+            // คนมาดูแลวันนี้ตั้งแต่ช่วงเช้า (06:00) ซึ่งผ่านไปแล้ว — เช็คแค่เวลาเริ่มของ
+            // ช่วงดูแล "แรกสุด" ที่เลือกไว้เทียบกับ startdate เท่านั้น (ตรงกับ logic หมดอายุ
+            // ใน AnnouncementStatusScheduler)
+            LocalDate reqStartdate = LocalDate.parse(getString(data, "startdate"));
+            LocalDate reqEnddate = LocalDate.parse(getString(data, "enddate"));
+            boolean reqCareMorning = getBool(data, "careMorning");
+            boolean reqCareAfternoon = getBool(data, "careAfternoon");
+            boolean reqCareEvening = getBool(data, "careEvening");
+            boolean reqCareNight = getBool(data, "careNight");
+
+            LocalTime earliestStart = null;
+            if (reqCareMorning) earliestStart = LocalTime.of(6, 0);
+            else if (reqCareAfternoon) earliestStart = LocalTime.of(11, 0);
+            else if (reqCareEvening) earliestStart = LocalTime.of(16, 0);
+            else if (reqCareNight) earliestStart = LocalTime.of(21, 0);
+
+            if (earliestStart != null) {
+                LocalDateTime earliestAllowed = LocalDateTime.of(reqStartdate, earliestStart);
+                if (!earliestAllowed.isAfter(LocalDateTime.now())) {
+                    response.put("message", "ไม่สามารถสร้างประกาศได้ เนื่องจากเวลาเริ่มต้นของช่วงดูแลที่เลือกไว้ผ่านไปแล้ว กรุณาเลือกวันที่หรือช่วงเวลาใหม่");
+                    return ResponseEntity.badRequest().body(response);
+                }
+            }
+
+            // =================== กันสร้างประกาศซ้ำ ===================
+            // ถ้าสัตว์เลี้ยงตัวเดิม มีประกาศที่ "ยังไม่จบงาน" (รับสมัคร/รอพิจารณา/กำลังดูแล)
+            // และช่วงวันที่ทับกับที่กำลังจะสร้างใหม่ ไม่อนุญาตให้สร้างซ้ำ
+            Integer reqPetID = Integer.parseInt(data.get("petID").toString());
+            List<String> activeStatuses = Arrays.asList("รับสมัคร", "รอพิจารณา", "กำลังดูแล");
+            List<Announcement> existingForPet = announcementRepository.findByPetID(reqPetID);
+            for (Announcement exist : existingForPet) {
+                if (!activeStatuses.contains(exist.getStatus())) continue;
+                LocalDate exStart = exist.getStartdate();
+                LocalDate exEnd = exist.getEnddate();
+                if (exStart == null || exEnd == null) continue;
+                boolean overlap = !reqEnddate.isBefore(exStart) && !reqStartdate.isAfter(exEnd);
+                if (overlap) {
+                    response.put("message", "สัตว์เลี้ยงตัวนี้มีประกาศในช่วงวันที่นี้อยู่แล้ว กรุณาเลือกวันที่อื่น หรือรอให้ประกาศเดิมเสร็จสิ้น/ถูกยกเลิกก่อน");
+                    return ResponseEntity.badRequest().body(response);
+                }
+            }
+
             // บันทึก CarePet ก่อน
             CarePet carePet = new CarePet();
             carePet.setCareMorning(getBool(data, "careMorning"));
@@ -52,10 +97,15 @@ public class AnnouncementController {
             carePet.setFeedAfternoon(getBool(data, "feedAfternoon"));
             carePet.setFeedEvening(getBool(data, "feedEvening"));
             carePet.setFeedNight(getBool(data, "feedNight"));
+            carePet.setFeedMorningDetail(getString(data, "feedMorningDetail"));
+            carePet.setFeedAfternoonDetail(getString(data, "feedAfternoonDetail"));
+            carePet.setFeedEveningDetail(getString(data, "feedEveningDetail"));
+            carePet.setFeedNightDetail(getString(data, "feedNightDetail"));
             carePet.setIsFoodPrepared(getBool(data, "isFoodPrepared"));
             carePet.setFoodAmount(getString(data, "foodAmount"));
             carePet.setMedicineDetail(getString(data, "medicineDetail"));
-            carePet.setIsCleanService(getBool(data, "isCleanService"));
+            // เก็บอึ/ฉี่ เป็นบริการมาตรฐานที่รวมอยู่ในทุกประกาศเสมอ ไม่ใช่บริการเสริมที่เลือกได้อีกต่อไป
+            carePet.setIsCleanService(true);
             carePet.setIsWalkService(getBool(data, "isWalkService"));
             CarePet savedCarePet = carePetRepository.save(carePet);
 
@@ -279,6 +329,9 @@ public class AnnouncementController {
         response.put("longitude", ann.getLongitude());
         response.put("status", ann.getStatus());
         response.put("totalAmount", ann.getTotalAmount());
+        response.put("emergencyMessage", ann.getEmergencyMessage());
+        response.put("emergencyImage", ann.getEmergencyImage());
+        response.put("emergencyReportedAt", ann.getEmergencyReportedAt());
 
         // ข้อมูลเจ้าของ
         petOwnerRepository.findById(ann.getOwnerID()).ifPresent(owner -> {
@@ -320,6 +373,7 @@ public class AnnouncementController {
             petMap.put("behaviorHighEnergy", pet.getBehaviorHighEnergy());
             petMap.put("behaviorJumpOnPeople", pet.getBehaviorJumpOnPeople());
             petMap.put("behaviorHardControl", pet.getBehaviorHardControl());
+            petMap.put("isDeceased", Boolean.TRUE.equals(pet.getIsDeceased()));
             response.put("pet", petMap);
         });
 
@@ -373,6 +427,7 @@ public class AnnouncementController {
                 applyMap.put("sitterImage", sitter.getSitterImage());
                 applyMap.put("pricePerDay", sitter.getPricePerDay());
                 applyMap.put("subdistrict", sitter.getSubdistrict());
+                applyMap.put("district", sitter.getDistrict());
                 applyMap.put("province", sitter.getProvince());
                 applyMap.put("petAlowPet", sitter.getPetAllowType());
 
@@ -476,8 +531,8 @@ public class AnnouncementController {
             return ResponseEntity.badRequest().body(response);
         }
         Announcement ann = optional.get();
-        // หมายเหตุ: ไม่เปลี่ยนสถานะเป็น "งานเสร็จสิ้น" ที่นี่ เพราะยังไม่ได้ชำระเงิน/ยืนยันรับเงินจริง
-        // สถานะจะเปลี่ยนเป็น "งานเสร็จสิ้น" ตอนผู้ดูแลกดยืนยันรับเงินแล้วเท่านั้น (ดู SitterJobController.confirmPayment)
+        // หมายเหตุ: ไม่เปลี่ยนสถานะเป็น "งานเสร็จสิ้น" ที่นี่ เพราะยังไม่ได้ชำระเงินจริง
+        // สถานะจะเปลี่ยนเป็น "งานเสร็จสิ้น" ตอนเจ้าของอัปโหลดสลิปเท่านั้น (ดู uploadSlip ด้านล่าง)
         response.put("message", "ส่งไปหน้าชำระเงินเรียบร้อยแล้ว");
         response.put("totalAmount", ann.getTotalAmount() != null ? ann.getTotalAmount().toString() : "0");
         response.put("announceID", announceID.toString());
@@ -578,10 +633,15 @@ public class AnnouncementController {
                     cp.setFeedAfternoon(getBool(data, "feedAfternoon"));
                     cp.setFeedEvening(getBool(data, "feedEvening"));
                     cp.setFeedNight(getBool(data, "feedNight"));
+                    cp.setFeedMorningDetail(getString(data, "feedMorningDetail"));
+                    cp.setFeedAfternoonDetail(getString(data, "feedAfternoonDetail"));
+                    cp.setFeedEveningDetail(getString(data, "feedEveningDetail"));
+                    cp.setFeedNightDetail(getString(data, "feedNightDetail"));
                     cp.setIsFoodPrepared(getBool(data, "isFoodPrepared"));
                     cp.setFoodAmount(getString(data, "foodAmount"));
                     cp.setMedicineDetail(getString(data, "medicineDetail"));
-                    cp.setIsCleanService(getBool(data, "isCleanService"));
+                    // เก็บอึ/ฉี่ เป็นบริการมาตรฐานที่รวมอยู่ในทุกประกาศเสมอ ไม่ใช่บริการเสริมที่เลือกได้อีกต่อไป
+                    cp.setIsCleanService(true);
                     cp.setIsWalkService(getBool(data, "isWalkService"));
                     carePetRepository.save(cp);
                 });
@@ -613,22 +673,52 @@ public class AnnouncementController {
                 response.put("message", "ไม่พบข้อมูลงาน");
                 return ResponseEntity.badRequest().body(response);
             }
+
+            // ต้องมีผู้ดูแลที่ได้รับเลือกจริง จึงจะชำระเงินได้
+            Optional<ApplyJob> selectedOpt = applyJobRepository.findByAnnounceID(announceID).stream()
+                .filter(a -> "ได้รับเลือก".equals(a.getAppStatus()))
+                .findFirst();
+            if (selectedOpt.isEmpty()) {
+                response.put("message", "ไม่พบผู้ดูแลที่ได้รับเลือกสำหรับงานนี้");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            Optional<AssignJob> ajOpt = assignJobRepository.findById(ann.getAssignJobID());
+            if (ajOpt.isEmpty()) {
+                response.put("message", "ไม่พบข้อมูลงาน");
+                return ResponseEntity.badRequest().body(response);
+            }
+            AssignJob aj = ajOpt.get();
+
+            // กันอัปโหลดซ้ำ — งานนี้ชำระเงินและปิดงานไปแล้ว
+            if ("ชำระเงินเรียบร้อยแล้ว".equals(aj.getIsPaymentConfirmed())) {
+                response.put("message", "งานนี้ชำระเงินเรียบร้อยแล้ว");
+                return ResponseEntity.badRequest().body(response);
+            }
+
             String fileName = saveFile(slipImage, uploadDirSlips);
-            assignJobRepository.findById(ann.getAssignJobID()).ifPresent(aj -> {
-                aj.setSlipImage(fileName);
-                aj.setWorkStatus("รอผู้ดูแลยืนยันการรับเงิน");
-                assignJobRepository.save(aj);
-                
-             // แจ้งเตือนผู้ดูแลว่าเจ้าของอัพสลิปแล้ว
-                applyJobRepository.findByAnnounceID(announceID).stream()
-                    .filter(a -> "ได้รับเลือก".equals(a.getAppStatus()))
-                    .findFirst()
-                    .ifPresent(a -> notificationController.saveNotif(
-                        a.getSitterID(), "SITTER",
-                        "💰 เจ้าของสัตว์เลี้ยงอัพโหลดสลิปแล้ว กรุณายืนยันการรับเงิน",
-                        announceID
-                    ));
-            });
+            if (fileName == null) {
+                response.put("message", "เกิดข้อผิดพลาดในการอัปโหลดสลิป กรุณาลองใหม่อีกครั้ง");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            // ระบบใหม่: เจ้าของอัปโหลดสลิป = ชำระเงินเรียบร้อย + งานเสร็จสิ้นทันที (ไม่ต้องรอผู้ดูแลยืนยัน)
+            // ต่างฝ่ายต่างถูกพาไปหน้ารีวิวจนกว่าจะรีวิว (เช็คที่ /api/review/check)
+            aj.setSlipImage(fileName);
+            aj.setWorkStatus("ชำระเงินแล้ว");
+            aj.setIsPaymentConfirmed("ชำระเงินเรียบร้อยแล้ว");
+            assignJobRepository.save(aj);
+
+            ann.setStatus("งานเสร็จสิ้น");
+            announcementRepository.save(ann);
+
+            // แจ้งเตือนผู้ดูแลว่าได้รับเงินแล้ว และให้รีวิวเจ้าของสัตว์เลี้ยง
+            notificationController.saveNotif(
+                selectedOpt.get().getSitterID(), "SITTER",
+                "💰 เจ้าของสัตว์เลี้ยงชำระเงินแล้ว งานเสร็จสมบูรณ์ กรุณารีวิวเจ้าของสัตว์เลี้ยง",
+                announceID
+            );
+
             response.put("message", "อัพโหลดสลิปเรียบร้อยแล้ว");
             return ResponseEntity.ok(response);
         } catch (Exception e) {

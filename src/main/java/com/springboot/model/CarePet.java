@@ -42,6 +42,18 @@ public class CarePet {
     @Column(name = "feedNight")
     private Boolean feedNight = false;
 
+    @Column(name = "feedMorningDetail", length = 255)
+    private String feedMorningDetail;
+
+    @Column(name = "feedAfternoonDetail", length = 255)
+    private String feedAfternoonDetail;
+
+    @Column(name = "feedEveningDetail", length = 255)
+    private String feedEveningDetail;
+
+    @Column(name = "feedNightDetail", length = 255)
+    private String feedNightDetail;
+
     // =================== อาหาร ===================
     @Column(name = "isFoodPrepared")
     private Boolean isFoodPrepared = false;
@@ -90,6 +102,18 @@ public class CarePet {
 
     public Boolean getFeedNight() { return feedNight; }
     public void setFeedNight(Boolean feedNight) { this.feedNight = feedNight; }
+
+    public String getFeedMorningDetail() { return feedMorningDetail; }
+    public void setFeedMorningDetail(String feedMorningDetail) { this.feedMorningDetail = feedMorningDetail; }
+
+    public String getFeedAfternoonDetail() { return feedAfternoonDetail; }
+    public void setFeedAfternoonDetail(String feedAfternoonDetail) { this.feedAfternoonDetail = feedAfternoonDetail; }
+
+    public String getFeedEveningDetail() { return feedEveningDetail; }
+    public void setFeedEveningDetail(String feedEveningDetail) { this.feedEveningDetail = feedEveningDetail; }
+
+    public String getFeedNightDetail() { return feedNightDetail; }
+    public void setFeedNightDetail(String feedNightDetail) { this.feedNightDetail = feedNightDetail; }
 
     public Boolean getIsFoodPrepared() { return isFoodPrepared; }
     public void setIsFoodPrepared(Boolean isFoodPrepared) { this.isFoodPrepared = isFoodPrepared; }

@@ -1,12 +1,18 @@
 package com.springboot.service;
 
+import com.springboot.controller.NotificationController;
+import com.springboot.model.Announcement;
+import com.springboot.model.ApplyJob;
 import com.springboot.model.Pet;
 import com.springboot.model.PetType;
+import com.springboot.repository.AnnouncementRepository;
+import com.springboot.repository.ApplyJobRepository;
 import com.springboot.repository.PetRepository;
 import com.springboot.repository.PetTypeRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -27,6 +33,15 @@ public class PetService {
 
     @Autowired
     private PetTypeRepository petTypeRepository;
+
+    @Autowired
+    private AnnouncementRepository announcementRepository;
+
+    @Autowired
+    private ApplyJobRepository applyJobRepository;
+
+    @Autowired
+    private NotificationController notificationController;
 
     @Value("${file.upload-dir.pets}")
     private String uploadDirPets;
@@ -191,13 +206,78 @@ public class PetService {
     }
 
     // =================== แจ้งการจากไป ===================
+    // หมายเหตุ: กดได้เสมอไม่ว่าสัตว์เลี้ยงจะมีประกาศ/งานที่กำลังดำเนินอยู่หรือไม่
+    // พฤติกรรมแยกตามสถานะประกาศ ณ ตอนที่กด:
+    //   1) รับสมัคร / รอพิจารณา  → ยังไม่มีผู้ดูแลที่ได้รับเลือก → ปิดเป็น "งานเสร็จสิ้น" ทันที
+    //                              (ไม่จ่ายเงิน ไม่รีวิว) ผู้สมัครที่ค้างอยู่ถูกยกเลิกคำขอ + แจ้งเตือน
+    //   2) ได้รับผู้ดูแลแล้ว       → เลือกผู้ดูแลแล้วแต่ยังไม่ถึงวันเริ่ม → ปิดเป็น "งานเสร็จสิ้น" ทันที
+    //                              (ไม่จ่ายเงิน ไม่รีวิว) แจ้งเตือนผู้ดูแลพร้อมเหตุผล
+    //   3) กำลังดูแล              → ไม่เปลี่ยนสถานะประกาศ ปิดการส่งรายงาน (เช็คที่ submitReport)
+    //                              เจ้าของต้องโอนเงินเต็มจำนวน + อัปโหลดสลิป (upload-slip) →
+    //                              งานเสร็จสิ้น → ต่างฝ่ายต่างรีวิวเหมือนงานปกติ
+    // ประกาศที่จบไปแล้ว/หมดอายุ/ถูกยกเลิกเพราะสัตว์เลี้ยงเสียชีวิต (ของเดิม) จะไม่ถูกแตะ
+    @Transactional
     public String markDeceased(Integer petID) {
         Optional<Pet> optional = petRepository.findById(petID);
         if (optional.isEmpty()) return "ไม่พบสัตว์เลี้ยง";
 
         Pet pet = optional.get();
+        // กดซ้ำ: ประมวลผลไปแล้วครั้งหนึ่ง ไม่ต้องทำและไม่ต้องแจ้งเตือนซ้ำ
+        if (Boolean.TRUE.equals(pet.getIsDeceased())) return "เปลี่ยนสถานะสำเร็จ";
+
         pet.setIsDeceased(true);
         petRepository.save(pet);
+
+        List<Announcement> anns = announcementRepository.findByPetID(petID);
+        for (Announcement ann : anns) {
+            String status = ann.getStatus();
+            if ("งานเสร็จสิ้น".equals(status)
+                || "หมดอายุ".equals(status)
+                || "ยกเลิก (สัตว์เลี้ยงเสียชีวิต)".equals(status)) {
+                continue;
+            }
+
+            List<ApplyJob> applyJobs = applyJobRepository.findByAnnounceID(ann.getAnnounceID());
+
+            if ("กำลังดูแล".equals(status)) {
+                // กรณี 3: ไม่ปิดงาน รอเจ้าของโอนเงินเต็มจำนวน
+                for (ApplyJob aj : applyJobs) {
+                    if ("ได้รับเลือก".equals(aj.getAppStatus())) {
+                        notificationController.saveNotif(
+                            aj.getSitterID(), "SITTER",
+                            "🕊️ ขอแสดงความเสียใจ " + pet.getPetName() + " เสียชีวิต เจ้าของจะโอนค่าดูแลเต็มจำนวนให้คุณ กรุณารอการชำระเงิน (ไม่ต้องส่งรายงานเพิ่มแล้ว)",
+                            ann.getAnnounceID()
+                        );
+                    }
+                }
+                continue;
+            }
+
+            // กรณี 1 และ 2: ปิดเป็น "งานเสร็จสิ้น" ทันที (ไม่มีการจ่ายเงิน/รีวิว)
+            ann.setStatus("งานเสร็จสิ้น");
+            announcementRepository.save(ann);
+
+            for (ApplyJob aj : applyJobs) {
+                if ("ได้รับเลือก".equals(aj.getAppStatus())) {
+                    // กรณี 2: ผู้ดูแลที่ได้รับเลือก — คง appStatus เดิมไว้ แจ้งเหตุผลที่งานปิด
+                    notificationController.saveNotif(
+                        aj.getSitterID(), "SITTER",
+                        "🕊️ งานดูแล " + pet.getPetName() + " ปิดแล้ว เนื่องจากสัตว์เลี้ยงเสียชีวิตก่อนวันเริ่มดูแล ขออภัยในความไม่สะดวก",
+                        ann.getAnnounceID()
+                    );
+                } else if ("รอพิจารณา".equals(aj.getAppStatus())) {
+                    // กรณี 1: ผู้สมัครที่ค้างอยู่
+                    aj.setAppStatus("ถูกยกเลิก (สัตว์เลี้ยงเสียชีวิต)");
+                    applyJobRepository.save(aj);
+                    notificationController.saveNotif(
+                        aj.getSitterID(), "SITTER",
+                        "🕊️ ประกาศดูแล " + pet.getPetName() + " ปิดแล้ว เนื่องจากสัตว์เลี้ยงเสียชีวิต",
+                        ann.getAnnounceID()
+                    );
+                }
+            }
+        }
+
         return "เปลี่ยนสถานะสำเร็จ";
     }
 

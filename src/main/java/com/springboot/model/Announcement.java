@@ -68,6 +68,16 @@ public class Announcement {
     @Column(name = "status", length = 50)
     private String status; // รับสมัคร, รอพิจารณา, ได้รับผู้ดูแลแล้ว, กำลังดูแล, งานเสร็จสิ้น
 
+    // =================== แจ้งเหตุฉุกเฉิน (ผู้ดูแลแจ้งระหว่างดูแลงาน) ===================
+    @Column(name = "emergencyMessage", length = 1000)
+    private String emergencyMessage;
+
+    @Column(name = "emergencyImage", length = 255)
+    private String emergencyImage;
+
+    @Column(name = "emergencyReportedAt")
+    private LocalDateTime emergencyReportedAt;
+
     // =================== FK (ท้ายสุด) ===================
     @Column(name = "ownerID", nullable = false)
     private Integer ownerID;
@@ -152,6 +162,15 @@ public class Announcement {
 
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+
+    public String getEmergencyMessage() { return emergencyMessage; }
+    public void setEmergencyMessage(String emergencyMessage) { this.emergencyMessage = emergencyMessage; }
+
+    public String getEmergencyImage() { return emergencyImage; }
+    public void setEmergencyImage(String emergencyImage) { this.emergencyImage = emergencyImage; }
+
+    public LocalDateTime getEmergencyReportedAt() { return emergencyReportedAt; }
+    public void setEmergencyReportedAt(LocalDateTime emergencyReportedAt) { this.emergencyReportedAt = emergencyReportedAt; }
 
     public Integer getOwnerID() { return ownerID; }
     public void setOwnerID(Integer ownerID) { this.ownerID = ownerID; }
